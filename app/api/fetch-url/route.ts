@@ -1,6 +1,8 @@
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
+import { getCurrentUserFromRequest } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const MAX_BYTES = 12 * 1024 * 1024; // 12 MB cap
 const TIMEOUT_MS = 15_000;
@@ -41,8 +43,12 @@ function injectBase(html: string, baseUrl: string): string {
   return tag + html;
 }
 
-export async function GET(request: Request) {
-  const input = new URL(request.url).searchParams.get("url");
+export async function GET(request: NextRequest) {
+  if (!getCurrentUserFromRequest(request)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const input = request.nextUrl.searchParams.get("url");
   if (!input) return err("缺少 url 参数");
 
   let target: URL;

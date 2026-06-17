@@ -60,9 +60,9 @@ type FrameMessage =
 
 const READER_BRIDGE = `
 <style id="mobile-reader-comment-style">
-::selection { background: rgba(47, 95, 107, 0.24); }
-::highlight(mr-comment) { background: rgba(250, 204, 21, 0.42); color: inherit; }
-::highlight(mr-active-comment) { background: rgba(47, 95, 107, 0.3); color: inherit; text-decoration: underline; text-decoration-thickness: 2px; }
+::selection { background: rgba(113, 113, 122, 0.24); }
+::highlight(mr-comment) { background: rgba(161, 161, 170, 0.34); color: inherit; }
+::highlight(mr-active-comment) { background: rgba(24, 24, 27, 0.22); color: inherit; text-decoration: underline; text-decoration-thickness: 2px; }
 </style>
 <script>
 (function () {
@@ -598,13 +598,9 @@ export default function ReaderPage() {
         <div>
           <p style={{ fontSize: 30, margin: "0 0 8px" }}>🗒️</p>
           <p>找不到这篇文档，可能已被删除。</p>
-          <button
-            className="upload-btn"
-            style={{ marginTop: 16 }}
-            onClick={() => router.push("/")}
-          >
+          <a className="upload-btn" style={{ marginTop: 16 }} href="/">
             返回阅读列表
-          </button>
+          </a>
         </div>
       </div>
     );
