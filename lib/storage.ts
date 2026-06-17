@@ -10,10 +10,28 @@ export interface DocMeta {
   size: number; // bytes of the html string
 }
 
+export interface CommentAnchor {
+  startPath: number[];
+  startOffset: number;
+  endPath: number[];
+  endOffset: number;
+}
+
+export interface ReaderComment {
+  id: string;
+  docId: string;
+  quote: string;
+  note: string;
+  anchor: CommentAnchor;
+  createdAt: number;
+  updatedAt: number;
+}
+
 const DB_NAME = "mobile-reader";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const META_STORE = "meta";
 const CONTENT_STORE = "content";
+const COMMENT_STORE = "comments";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -26,11 +44,25 @@ function openDB(): Promise<IDBDatabase> {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
+        const upgradeTx = req.transaction;
         if (!db.objectStoreNames.contains(META_STORE)) {
           db.createObjectStore(META_STORE, { keyPath: "id" });
         }
         if (!db.objectStoreNames.contains(CONTENT_STORE)) {
           db.createObjectStore(CONTENT_STORE, { keyPath: "id" });
+        }
+        if (upgradeTx) {
+          let commentStore: IDBObjectStore;
+          if (db.objectStoreNames.contains(COMMENT_STORE)) {
+            commentStore = upgradeTx.objectStore(COMMENT_STORE);
+          } else {
+            commentStore = db.createObjectStore(COMMENT_STORE, {
+              keyPath: "id",
+            });
+          }
+          if (!commentStore.indexNames.contains("docId")) {
+            commentStore.createIndex("docId", "docId");
+          }
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -146,9 +178,17 @@ export async function addDoc(html: string, source: string): Promise<DocMeta> {
 }
 
 export async function deleteDoc(id: string): Promise<void> {
-  await tx([META_STORE, CONTENT_STORE], "readwrite", (t) => {
+  await tx([META_STORE, CONTENT_STORE, COMMENT_STORE], "readwrite", (t) => {
     t.objectStore(META_STORE).delete(id);
     t.objectStore(CONTENT_STORE).delete(id);
+    const comments = t.objectStore(COMMENT_STORE).index("docId");
+    const cursorReq = comments.openCursor(id);
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
   });
 }
 
@@ -158,5 +198,72 @@ export async function renameDoc(id: string, title: string): Promise<void> {
   meta.title = title;
   await tx(META_STORE, "readwrite", (t) => {
     t.objectStore(META_STORE).put(meta);
+  });
+}
+
+export async function listComments(docId: string): Promise<ReaderComment[]> {
+  const comments = await tx(COMMENT_STORE, "readonly", (t) =>
+    reqToPromise(
+      t.objectStore(COMMENT_STORE).index("docId").getAll(docId) as IDBRequest<
+        ReaderComment[]
+      >
+    )
+  );
+  return comments.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function addComment(input: {
+  docId: string;
+  quote: string;
+  note: string;
+  anchor: CommentAnchor;
+}): Promise<ReaderComment> {
+  const now = Date.now();
+  const comment: ReaderComment = {
+    id: crypto.randomUUID(),
+    docId: input.docId,
+    quote: input.quote.trim(),
+    note: input.note.trim(),
+    anchor: input.anchor,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await tx(COMMENT_STORE, "readwrite", (t) => {
+    t.objectStore(COMMENT_STORE).put(comment);
+  });
+  return comment;
+}
+
+async function getComment(id: string): Promise<ReaderComment | null> {
+  const rec = await tx(COMMENT_STORE, "readonly", (t) =>
+    reqToPromise(
+      t.objectStore(COMMENT_STORE).get(id) as IDBRequest<
+        ReaderComment | undefined
+      >
+    )
+  );
+  return rec ?? null;
+}
+
+export async function updateComment(
+  id: string,
+  note: string
+): Promise<ReaderComment | null> {
+  const current = await getComment(id);
+  if (!current) return null;
+  const updated: ReaderComment = {
+    ...current,
+    note: note.trim(),
+    updatedAt: Date.now(),
+  };
+  await tx(COMMENT_STORE, "readwrite", (t) => {
+    t.objectStore(COMMENT_STORE).put(updated);
+  });
+  return updated;
+}
+
+export async function deleteComment(id: string): Promise<void> {
+  await tx(COMMENT_STORE, "readwrite", (t) => {
+    t.objectStore(COMMENT_STORE).delete(id);
   });
 }
