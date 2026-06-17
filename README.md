@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 阅读 · Mobile Reader
 
-## Getting Started
+一个移动端阅读友好的 Next.js Web App：上传 HTML 文件 → 加入阅读列表 → 点击进入沉浸阅读。
 
-First, run the development server:
+## 运行
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run dev     # 开发，http://localhost:3000
+npm run build   # 生产构建
+npm start       # 运行生产版本
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 功能
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **添加文档**：点击「＋ 添加」选择来源——
+  - **上传文件**：选择本地 `.html`（支持多选），也可直接拖拽到页面。
+  - **从网址导入**：输入链接，由服务端抓取该页面 HTML 加入列表（自动补全 `https://`，并注入 `<base>` 让相对资源在阅读时正常加载）。
+- **阅读列表**：自动从 `<title>`（或首个 `<h1>`）提取标题，按添加时间倒序显示。
+- **阅读**：点击列表项进入 `/read/[id]`，原始 HTML 在隔离的 `<iframe>` 中渲染，完整保留其自带样式与脚本，并带返回栏。
+- **管理**：每项的 `⋯` 菜单支持打开 / 重命名 / 删除。
+- **离线持久化**：文档存在浏览器本地 **IndexedDB**，无需后端，刷新与离线均可访问。
+- 自适应浅色 / 深色，适配刘海屏安全区。
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 结构
 
-## Learn More
+| 文件 | 作用 |
+| --- | --- |
+| `app/page.tsx` | 阅读列表 + 上传交互 |
+| `app/read/[id]/page.tsx` | 阅读页（iframe 隔离渲染） |
+| `app/api/fetch-url/route.ts` | 服务端抓取网址的接口（绕过 CORS，含 SSRF 防护） |
+| `lib/storage.ts` | IndexedDB 存储层（元数据与正文分库）+ 标题提取 |
+| `app/globals.css` | 全局主题与移动端样式 |
 
-To learn more about Next.js, take a look at the following resources:
+> 网址导入走服务端是因为浏览器直接 `fetch` 跨域页面会被 CORS 拦截。接口限制 http/https、屏蔽内网与云元数据地址（SSRF）、限制 12MB 与 15s 超时。
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 扩展其他导入方式
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+新增导入方式（粘贴、URL 抓取、云端同步等）只需拿到 HTML 字符串后调用：
 
-## Deploy on Vercel
+```ts
+import { addDoc } from "@/lib/storage";
+await addDoc(htmlString, "来源标签");
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+`addDoc` 与来源无关，会自动生成 id、提取标题、计算大小并写入列表。
