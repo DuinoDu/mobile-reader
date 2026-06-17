@@ -9,6 +9,7 @@ import {
   renameDoc,
   type DocMeta,
 } from "@/lib/storage";
+import { ReaderLogo } from "./reader-logo";
 
 function formatDate(ts: number): string {
   const d = new Date(ts);
@@ -184,9 +185,14 @@ export default function Home() {
       onDrop={onDrop}
     >
       <header className="hero">
-        <div>
-          <h1>阅读列表</h1>
-          <p>{docs?.length ? `${docs.length} 篇文档` : "添加 HTML 开始阅读"}</p>
+        <div className="hero-brand">
+          <ReaderLogo />
+          <h1 className="visually-hidden">阅读列表</h1>
+          <p>
+            {docs?.length
+              ? `阅读列表 · ${docs.length} 篇文档`
+              : "添加 HTML 开始阅读"}
+          </p>
         </div>
         <div style={{ position: "relative" }}>
           <button
