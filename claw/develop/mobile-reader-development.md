@@ -46,7 +46,7 @@ MOBILE_READER_DB_PATH=./data/mobile-reader.sqlite
 ## 功能与结构
 
 - **登录**：`app/page.tsx` 作为服务端入口，未登录时重定向到 `/login`。
-- **登录页**：`app/login/page.tsx` 复用 arxiv-radar 风格，并使用 `app/animated-graph-background.tsx` 提供背景动画。
+- **登录页**：`app/login/page.tsx` 复用原 main 分支的 ReaderLogo、黑白配色和移动端布局风格。
 - **阅读列表**：`app/reader-home.tsx` 负责客户端上传、URL 导入、重命名和删除交互。
 - **阅读页**：`app/read/[id]/page.tsx` 使用 iframe 隔离渲染原始 HTML，并保留本地评论能力。
 - **文档 API**：`app/api/docs/*` 提供已登录用户的文档列表、创建、重命名、读取和删除。
