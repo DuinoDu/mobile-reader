@@ -22,7 +22,6 @@ export function ReaderLogo({ className = "" }: ReaderLogoProps) {
       </svg>
       <span className="reader-logo-type" aria-hidden="true">
         <span className="reader-logo-name">Reader</span>
-        <span className="reader-logo-line">HTML 阅读器</span>
       </span>
     </div>
   );

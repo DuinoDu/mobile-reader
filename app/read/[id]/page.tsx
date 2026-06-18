@@ -636,16 +636,46 @@ export default function ReaderPage() {
   return (
     <div className="reader-root">
       <div className="reader-bar">
-        <button className="back" onClick={() => router.push("/")}>
-          ‹ 列表
+        <button
+          className="back"
+          aria-label="返回列表"
+          title="返回列表"
+          onClick={() => router.push("/")}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
         </button>
         <span className="doc-title">{title}</span>
         <button
           className="reader-comments-toggle"
           aria-pressed={commentsOpen}
+          aria-label="评论"
+          title="评论"
           onClick={() => setCommentsOpen((open) => !open)}
         >
-          评论 {comments.length}
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 0 1-.9-3.8A8.38 8.38 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z" />
+          </svg>
+          {comments.length > 0 && (
+            <span className="reader-comments-count">{comments.length}</span>
+          )}
         </button>
       </div>
       <iframe
