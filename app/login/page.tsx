@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { ReaderLogo } from "@/app/reader-logo";
 import { getCurrentUser } from "@/lib/auth";
+import { isDevSsoBypassEnabled } from "@/lib/dev-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,6 +18,9 @@ export default async function LoginPage({
 }) {
   const user = await getCurrentUser();
   if (user) redirect("/");
+
+  // 本地开发：跳过 SSO 页面，直接走直登路由建立会话。
+  if (isDevSsoBypassEnabled()) redirect("/api/auth/login");
 
   const { error } = await searchParams;
 

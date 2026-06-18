@@ -2,10 +2,13 @@ import { randomBytes } from "node:crypto";
 import { type NextRequest, NextResponse } from "next/server";
 import {
   OAUTH_STATE_COOKIE,
+  createUserSession,
   oauthStateCookieOptions,
   sanitizeReturnTo,
+  setSessionCookie,
 } from "@/lib/auth";
-import { buildAuthorizeUrl } from "@/lib/conductor-sso";
+import { buildAuthorizeUrl, getAppBaseUrl } from "@/lib/conductor-sso";
+import { getOrCreateDevUser, isDevSsoBypassEnabled } from "@/lib/dev-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,8 +24,18 @@ function encodeStateCookie(value: StateCookie): string {
 }
 
 export async function GET(request: NextRequest) {
-  const state = randomBytes(16).toString("hex");
   const next = sanitizeReturnTo(request.nextUrl.searchParams.get("next"));
+
+  // 本地开发：跳过 Conductor SSO，直接以本地用户登录。
+  if (isDevSsoBypassEnabled()) {
+    const user = getOrCreateDevUser();
+    const session = createUserSession(user.id);
+    const response = NextResponse.redirect(new URL(next, getAppBaseUrl(request)));
+    setSessionCookie(response, session.token);
+    return response;
+  }
+
+  const state = randomBytes(16).toString("hex");
   const authorizeUrl = buildAuthorizeUrl({ request, state });
   const response = NextResponse.redirect(authorizeUrl);
 
