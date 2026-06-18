@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { ReaderLogo } from "@/app/reader-logo";
+import { AnimatedGraphBackground } from "@/app/animated-graph-background";
 import { getCurrentUser } from "@/lib/auth";
 import { isDevSsoBypassEnabled } from "@/lib/dev-auth";
 
@@ -26,14 +26,9 @@ export default async function LoginPage({
 
   return (
     <main className="login-wrap">
-      <section className="login-panel" aria-labelledby="login-title">
-        <div className="hero-brand">
-          <ReaderLogo />
-          <h1 id="login-title" className="visually-hidden">
-            登录 Reader
-          </h1>
-          <p>登录后继续阅读</p>
-        </div>
+      <AnimatedGraphBackground />
+      <div className="login-panel">
+        <h1 className="login-title">Reader</h1>
         {error && (
           <p className="login-error">{ERROR_COPY[error] ?? "登录失败。"}</p>
         )}
@@ -43,9 +38,23 @@ export default async function LoginPage({
           aria-label="SSO 登录"
           title="SSO 登录"
         >
-          SSO 登录
+          <svg
+            className="login-button-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+            <polyline points="10 17 15 12 10 7" />
+            <line x1="15" y1="12" x2="3" y2="12" />
+          </svg>
+          <span>SSO 登录</span>
         </a>
-      </section>
+      </div>
     </main>
   );
 }

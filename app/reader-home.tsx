@@ -45,6 +45,7 @@ export default function ReaderHome({
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [addMenu, setAddMenu] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
   const [urlOpen, setUrlOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [importing, setImporting] = useState(false);
@@ -75,18 +76,19 @@ export default function ReaderHome({
     setOpenMenu(null);
     setConfirmId(null);
     setAddMenu(false);
+    setConfirmLogout(false);
   }, []);
 
   useEffect(() => {
-    if (!openMenu && !addMenu) return;
+    if (!openMenu && !addMenu && !confirmLogout) return;
     const onPointerDown = (e: PointerEvent) => {
       const t = e.target as Element | null;
-      if (t?.closest(".menu, .menu-btn, .upload-btn")) return;
+      if (t?.closest(".menu, .menu-btn, .upload-btn, .user-chip")) return;
       closeAllMenus();
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [openMenu, addMenu, closeAllMenus]);
+  }, [openMenu, addMenu, confirmLogout, closeAllMenus]);
 
   const handleFiles = useCallback(
     async (files: FileList | File[]) => {
@@ -191,27 +193,37 @@ export default function ReaderHome({
       <header className="hero">
         <div className="hero-brand">
           <ReaderLogo />
-          <h1 className="visually-hidden">阅读列表</h1>
-          <p>
-            {docs?.length
-              ? `阅读列表 · ${docs.length} 篇文档 · ${user.displayName}`
-              : `添加 HTML 开始阅读 · ${user.displayName}`}
-          </p>
         </div>
         <div className="hero-actions">
-          <a className="logout-link" href="/api/auth/logout">
-            退出
-          </a>
+          <button
+            type="button"
+            className="user-chip"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (confirmLogout) {
+                window.location.href = "/api/auth/logout";
+              } else {
+                setOpenMenu(null);
+                setAddMenu(false);
+                setConfirmLogout(true);
+              }
+            }}
+          >
+            {confirmLogout ? "exit?" : user.displayName}
+          </button>
           <div style={{ position: "relative" }}>
             <button
               className="upload-btn"
+              aria-label="添加"
+              title="添加"
               onClick={(e) => {
                 e.stopPropagation();
                 setOpenMenu(null);
+                setConfirmLogout(false);
                 setAddMenu((v) => !v);
               }}
             >
-              ＋ 添加
+              ＋
             </button>
             {addMenu && (
               <div
