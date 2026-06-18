@@ -5,7 +5,7 @@ import {
   createUserSession,
   setSessionCookie,
 } from "@/lib/auth";
-import { exchangeAuthorizationCode } from "@/lib/conductor-sso";
+import { exchangeAuthorizationCode, getAppBaseUrl } from "@/lib/conductor-sso";
 import { encryptSecret } from "@/lib/crypto";
 import { upsertUserFromConductor } from "@/lib/db";
 
@@ -19,7 +19,7 @@ interface StateCookie {
 }
 
 function loginRedirect(request: NextRequest, error: string): NextResponse {
-  const url = new URL("/login", request.url);
+  const url = new URL("/login", getAppBaseUrl(request));
   url.searchParams.set("error", error);
   const response = NextResponse.redirect(url);
   clearOAuthStateCookie(response);
@@ -65,7 +65,9 @@ export async function GET(request: NextRequest) {
       conductorBaseUrl: token.conductor_base_url ?? null,
     });
     const session = createUserSession(user.id);
-    const response = NextResponse.redirect(new URL(expected.next, request.url));
+    const response = NextResponse.redirect(
+      new URL(expected.next, getAppBaseUrl(request))
+    );
 
     setSessionCookie(response, session.token);
     clearOAuthStateCookie(response);

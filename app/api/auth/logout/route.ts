@@ -1,12 +1,13 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { clearSessionCookie, deleteRequestSession } from "@/lib/auth";
+import { getAppBaseUrl } from "@/lib/conductor-sso";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 function logout(request: NextRequest): NextResponse {
   deleteRequestSession(request);
-  const response = NextResponse.redirect(new URL("/login", request.url));
+  const response = NextResponse.redirect(new URL("/login", getAppBaseUrl(request)));
   clearSessionCookie(response);
   return response;
 }
