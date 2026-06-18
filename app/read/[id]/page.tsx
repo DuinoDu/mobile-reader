@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type PointerEvent,
 } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -60,6 +61,7 @@ type FrameMessage =
 
 const READER_BRIDGE = `
 <style id="mobile-reader-comment-style">
+html, body, body * { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 ::selection { background: rgba(113, 113, 122, 0.24); }
 ::highlight(mr-comment) { background: rgba(161, 161, 170, 0.34); color: inherit; }
 ::highlight(mr-active-comment) { background: rgba(24, 24, 27, 0.22); color: inherit; text-decoration: underline; text-decoration-thickness: 2px; }
@@ -202,9 +204,15 @@ const READER_BRIDGE = `
     });
   }
 
-  function scheduleSelectionReport() {
+  function scheduleSelectionReport(delay) {
     window.clearTimeout(selectionTimer);
-    selectionTimer = window.setTimeout(reportSelection, 90);
+    selectionTimer = window.setTimeout(reportSelection, typeof delay === "number" ? delay : 90);
+  }
+
+  function scheduleTouchSelectionReport() {
+    scheduleSelectionReport(120);
+    window.setTimeout(reportSelection, 280);
+    window.setTimeout(reportSelection, 520);
   }
 
   function clearSelection() {
@@ -255,7 +263,10 @@ const READER_BRIDGE = `
   }
 
   document.addEventListener("mouseup", scheduleSelectionReport);
-  document.addEventListener("touchend", scheduleSelectionReport);
+  document.addEventListener("pointerup", scheduleSelectionReport);
+  document.addEventListener("touchend", scheduleTouchSelectionReport, { passive: true });
+  document.addEventListener("touchcancel", scheduleTouchSelectionReport, { passive: true });
+  document.addEventListener("selectionchange", scheduleSelectionReport);
   document.addEventListener("keyup", scheduleSelectionReport);
   document.addEventListener("click", function (event) {
     var id = commentIdAtPoint(event.clientX, event.clientY);
@@ -501,6 +512,14 @@ export default function ReaderPage() {
     setComposerOpen(true);
   }, [pendingSelection]);
 
+  const openComposerFromPress = useCallback(
+    (event: PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      openComposer();
+    },
+    [openComposer]
+  );
+
   const closeComposer = useCallback(() => {
     setComposerOpen(false);
     setNote("");
@@ -637,6 +656,7 @@ export default function ReaderPage() {
         <button
           className="selection-comment-btn"
           style={selectionButtonStyle}
+          onPointerDown={openComposerFromPress}
           onClick={openComposer}
         >
           评论

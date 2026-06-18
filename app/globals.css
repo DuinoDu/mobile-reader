@@ -528,6 +528,8 @@ a {
   font-size: 14px;
   font-weight: 700;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 @media (prefers-color-scheme: dark) {
   .selection-comment-btn {
