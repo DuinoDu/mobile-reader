@@ -31,10 +31,10 @@
 ### 1.1 设置连接占位变量（必做）
 真实 IP / 私钥从 conductor 运维 Makefile 获取（不要写回本文档）：
 ```sh
-make -f ~/code/scripts/makefile/Makefile.conductor info-volc
-# 输出形如： ssh -i ~/code/scripts/envrc/volcengine-robotcloud.pem root@<IP>
+make info-volc
+
 export SERVER_IP=<服务器IP>
-export SSH_KEY=~/code/scripts/envrc/volcengine-robotcloud.pem
+export SSH_KEY=<path to ssh key>
 export SERVER="root@$SERVER_IP"
 ```
 
@@ -265,7 +265,7 @@ PY'
 #   把打印出的 secret 同步写进 mobile-reader 的 /opt/mobile-reader/.env 的 CONDUCTOR_CLIENT_SECRET
 
 # 3) 重启 conductor（scoped pkill —— 只杀 conductor 自己的 server.ts，勿伤 operator）
-s 'export PATH=/root/.nvm/versions/node/v25.1.0/bin:$PATH
+s '. /root/.nvm/nvm.sh                         # 用 conductor 自己的 node（别硬编码版本）
    cd /opt/conductor/conductor
    pkill -f "/opt/conductor/conductor/.*server\.ts" || true
    sleep 1
