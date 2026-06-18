@@ -14,13 +14,13 @@
 - 多用户，登录走 **Conductor SSO**（OAuth code 流）。用户文档存服务端 **SQLite**（`better-sqlite3`）；划词评论存浏览器端 IndexedDB（不上服务端）。
 - `better-sqlite3` 是原生模块，**必须在服务器上按 service 所用的 node 版本编译**。service 用 `/usr/bin/node`（当前 v20.19.6），非交互 ssh 默认 node 也是 v20，`npm ci` 编出来的 ABI 与 service 一致——若哪天两者漂移会 `Could not locate the bindings file`（见 [§6](#6-常见坑)）。
 - 数据库是单个 SQLite 文件（`data/mobile-reader.sqlite`），表结构由 `lib/db.ts` 启动时 `CREATE TABLE IF NOT EXISTS` 自动建，无独立 migrate 步骤。数据迁移 = 拷文件。
-- 端口分配（同机已有别的应用）：`6152` conductor、`6160` arxiv-radar、**`6170` mobile-reader**。
+- service 只监听本机 `127.0.0.1` 的一个端口（本文用 **`6170`**），由 nginx 反代到公网；同机若已有其它服务，挑一个未占用端口即可。
 
 **发布铁律（必须遵守）**
 > **部署前先 `commit`；服务器代码只通过 `git push volc main` 同步（见下），绝不在服务器上手改 tracked 文件。** `.env`、`data/`（SQLite）、`node_modules`、`.next` 都是 gitignored / 未跟踪，不受 git 同步影响，单独维护。
 
-**代码同步机制（与 arxiv-radar 不同）**
-> mobile-reader 没有 GitHub 远端。服务器 `/opt/mobile-reader` 本身是一个**可直接 push 的 git 工作副本**（`receive.denyCurrentBranch=updateInstead`）。本地有名为 `volc` 的 remote 指向它，`git push volc main` 即把工作树更新到最新（见 [1.3](#13-代码落地git-remote-volc) / [§2](#2-日常更新redeploy)）。
+**代码同步机制**
+> 本仓库没有公共 GitHub 远端。服务器 `/opt/mobile-reader` 本身是一个**可直接 push 的 git 工作副本**（`receive.denyCurrentBranch=updateInstead`）。本地有名为 `volc` 的 remote 指向它，`git push volc main` 即把工作树更新到最新（见 [1.3](#13-代码落地git-remote-volc) / [§2](#2-日常更新redeploy)）。
 
 ---
 
@@ -172,7 +172,7 @@ nginx -t && systemctl reload nginx'
 ### 1.9 DNS（Volcengine 控制台 / 手动）
 本地无 Volcengine DNS API 凭证，**A 记录需在控制台改**：
 - 进 Volcengine DNS 控制台 → `conductor-ai.top` → 添加 A 记录：主机记录 `mobile-reader`，记录值 `$SERVER_IP`。
-- 校验（注意：直接查权威 `vip1/vip2.volcengine-dns.com` 可能因 GeoDNS 分区视图返回空，**以公共解析为准**）：
+- 校验（注意：直接查权威 NS 可能因 Volc DNS 分区视图返回空，**以公共解析为准**）：
 ```sh
 dig +short @223.5.5.5 mobile-reader.conductor-ai.top   # 期望 $SERVER_IP
 dig +short @8.8.8.8   mobile-reader.conductor-ai.top
@@ -231,53 +231,24 @@ curl -s -o /dev/null -w "https -> %{http_code}\n" https://mobile-reader.conducto
 
 ## 3. Conductor SSO client 管理
 
-mobile-reader 作为 OAuth client 接入 conductor。**client 注册表在 conductor 端的环境变量 `CONDUCTOR_SSO_CLIENTS_JSON` 里**（文件：`/opt/conductor/conductor/web/.env.production.local`，一个 JSON 数组）。改动需重启 conductor 才生效。
+mobile-reader 以 OAuth client 身份接入 Conductor SSO。本仓库只负责 **client 侧**配置（[1.4](#14-配置生产-env) 里的 `CONDUCTOR_*`）；**client 的注册在 SSO provider（Conductor）一侧完成** —— 具体在哪里登记、如何让配置生效，取决于你的 Conductor 部署，参见 Conductor 自己的运维文档（不在本仓库范围内）。
 
-> ⚠️ **影响共享服务**：重启 conductor 会让 `conductor-ai.top` 抖动数秒，期间 arxiv-radar / operator 等其它 client 的**新登录**会短暂失败（已登录会话不受影响）。
+需要在 Conductor 侧登记一个 OAuth client：
 
-**新增 / 更新 mobile-reader client：**
+| 字段 | 值 |
+|---|---|
+| `client_id` | 与本应用 `CONDUCTOR_CLIENT_ID` 一致（默认 `mobile-reader`） |
+| `client_secret` | 与本应用 `CONDUCTOR_CLIENT_SECRET` **完全一致**；用 `openssl rand -base64 32` 生成后两边同步 |
+| `redirect_uris` | 精确包含 `https://mobile-reader.conductor-ai.top/api/auth/callback`（精确匹配，无前缀匹配） |
+
+登记并在 provider 侧生效后，验证 client 是否被认得（真 secret + 假 code，期望 `invalid_grant` 而非 `invalid_client`）：
 ```sh
-# 1) 先看现状（含 arxiv-radar / operator，勿动它们）
-s 'grep "^CONDUCTOR_SSO_CLIENTS_JSON=" /opt/conductor/conductor/web/.env.production.local | head -c 200; echo'
-
-# 2) 用 python3 安全地往数组里加/更新本 client（自动备份、幂等：已存在则复用其 secret）
-s 'python3 - <<PY
-import json,secrets,shutil,time
-F="/opt/conductor/conductor/web/.env.production.local"
-KEY="CONDUCTOR_SSO_CLIENTS_JSON="
-CB="https://mobile-reader.conductor-ai.top/api/auth/callback"
-lines=open(F).read().splitlines(keepends=True)
-i=next(k for k,l in enumerate(lines) if l.startswith(KEY))
-arr=json.loads(lines[i][len(KEY):].strip())
-c=next((x for x in arr if x.get("client_id")=="mobile-reader"),None)
-sec=(c or {}).get("client_secret") or secrets.token_urlsafe(32)
-if c:
-    c["client_secret"]=sec; c.setdefault("display_name","Mobile Reader")
-    c.setdefault("redirect_uris",[]); 
-    (CB in c["redirect_uris"]) or c["redirect_uris"].append(CB)
-else:
-    arr.append({"client_id":"mobile-reader","display_name":"Mobile Reader","client_secret":sec,"redirect_uris":[CB]})
-shutil.copy2(F,F+".bak-mr-"+time.strftime("%Y%m%d-%H%M%S"))
-lines[i]=KEY+json.dumps(arr,ensure_ascii=False,separators=(",",":"))+"\n"
-open(F,"w").writelines(lines)
-print("clients:",[x["client_id"] for x in arr]); print("secret:",sec)
-PY'
-#   把打印出的 secret 同步写进 mobile-reader 的 /opt/mobile-reader/.env 的 CONDUCTOR_CLIENT_SECRET
-
-# 3) 重启 conductor（scoped pkill —— 只杀 conductor 自己的 server.ts，勿伤 operator）
-s '. /root/.nvm/nvm.sh                         # 用 conductor 自己的 node（别硬编码版本）
-   cd /opt/conductor/conductor
-   pkill -f "/opt/conductor/conductor/.*server\.ts" || true
-   sleep 1
-   nohup npm --prefix web run start > /opt/conductor/conductor.log 2>&1 &'
-for i in $(seq 1 20); do s 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:6152/api/health' | grep -q 200 && break; sleep 2; done
-
-# 4) 验证 conductor 认得本 client（用真 secret + 假 code；期望 invalid_grant，而非 invalid_client）
-s 'sec=$(grep "^CONDUCTOR_CLIENT_SECRET=" /opt/mobile-reader/.env | cut -d= -f2-)
-   curl -s -X POST http://127.0.0.1:6152/api/oauth/token -H "Content-Type: application/json" \
-     -d "{\"grant_type\":\"authorization_code\",\"client_id\":\"mobile-reader\",\"client_secret\":\"$sec\",\"code\":\"x\",\"redirect_uri\":\"https://mobile-reader.conductor-ai.top/api/auth/callback\"}"; echo'
+curl -s -X POST "$CONDUCTOR_BASE_URL/api/oauth/token" -H "Content-Type: application/json" \
+  -d '{"grant_type":"authorization_code","client_id":"mobile-reader","client_secret":"<同 .env 的 CONDUCTOR_CLIENT_SECRET>","code":"x","redirect_uri":"https://mobile-reader.conductor-ai.top/api/auth/callback"}'
+# invalid_grant  -> client_id / secret / redirect 都通过，只是 code 是假的 → 注册成功
+# invalid_client -> client 未注册，或 secret 不符
 ```
-> client 字段：`client_id`、`display_name`、`client_secret`、`redirect_uris`（精确匹配白名单，无前缀匹配）。conductor 重启的权威方式见 conductor 仓库 `scripts/deploy-prod.sh`；这里只做最小化「改 env + 重启」，不重新构建 conductor。
+> ⚠️ 在 provider 侧改动并重载 client 配置，可能短暂影响该 Conductor 上**其它** client 的新登录；请与 Conductor 运维方协调。
 
 ---
 
@@ -317,14 +288,13 @@ s 'sqlite3 /opt/mobile-reader/data/mobile-reader.sqlite "select count(*) users, 
 | 现象 | 原因 / 处理 |
 |---|---|
 | 登录后跳到 `localhost:6170` / `127.0.0.1:6170` | 回调里用了 `request.url`（nginx 后是内网地址）。必须用 `getAppBaseUrl()`（读 `MOBILE_READER_BASE_URL`）。login/callback/logout 三处都要。 |
-| 登录被 conductor 拒 `invalid_client` | conductor 端 `CONDUCTOR_SSO_CLIENTS_JSON` 没有 `mobile-reader` 或没重启。见 [§3](#3-conductor-sso-client-管理)。 |
-| token 交换 `invalid_client`（secret 不符） | `/opt/mobile-reader/.env` 的 `CONDUCTOR_CLIENT_SECRET` 与 conductor 端登记的不一致。 |
-| 回调 redirect_uri 不匹配 | conductor client 的 `redirect_uris` 必须**精确**含 `https://mobile-reader.conductor-ai.top/api/auth/callback`。 |
+| 登录被拒 `invalid_client` | Conductor 侧未注册该 client，或改完未重载配置。见 [§3](#3-conductor-sso-client-管理)。 |
+| token 交换 `invalid_client`（secret 不符） | `.env` 的 `CONDUCTOR_CLIENT_SECRET` 与 Conductor 侧登记的不一致。 |
+| 回调 redirect_uri 不匹配 | Conductor 侧该 client 的 `redirect_uris` 必须**精确**含 `https://mobile-reader.conductor-ai.top/api/auth/callback`。 |
 | `Could not locate the bindings file`（better-sqlite3） | 原生模块 ABI 与 service node 不符。用 service 的 `/usr/bin/node` 重新 `npm rebuild better-sqlite3`，确认编译用的 node 版本 == service node 版本。 |
 | `SyntaxError: missing ) after argument list`（service 起不来） | ExecStart 错指了 `.bin/next`（shell shim）。必须用 `node_modules/next/dist/bin/next`。 |
 | SSH 长会话中途 `Connection closed/reset` | 本机偶发。开 ControlMaster 复用连接；构建/长任务一律 detached（`nohup`）再轮询日志。 |
-| 公网仍解析到旧 IP / 权威查为空 | 公共缓存未过期，或 GeoDNS 分区视图（直接查 vip1/vip2 可能空）。以 `223.5.5.5`/`8.8.8.8` 为准；certbot 走公共解析。 |
-| 重启 conductor 误伤 operator | `pkill` 必须 scoped：`pkill -f "/opt/conductor/conductor/.*server\.ts"`，不要全局 `pkill -f server.ts`。 |
+| 公网仍解析到旧 IP / 权威查为空 | 公共缓存未过期，或 Volc DNS 的分区视图（直接查权威可能空）。以 `223.5.5.5`/`8.8.8.8` 为准；certbot 走公共解析。 |
 | `MOBILE_READER_SECRET is required in production` | 生产 `.env` 缺该变量（或别名 `AUTH_SECRET`/`SESSION_SECRET`）。 |
 
 ---
@@ -339,5 +309,5 @@ s 'sqlite3 /opt/mobile-reader/data/mobile-reader.sqlite "select count(*) users, 
 - systemd：`/etc/systemd/system/mobile-reader.service`（端口 6170）
 - nginx 站点：`/etc/nginx/sites-available/mobile-reader`
 - SQLite：`/opt/mobile-reader/data/mobile-reader.sqlite`
-- Conductor client 注册表：`/opt/conductor/conductor/web/.env.production.local` 的 `CONDUCTOR_SSO_CLIENTS_JSON`
-- 连接信息：`make -f ~/code/scripts/makefile/Makefile.conductor info-volc`
+- Conductor SSO client 注册：在 Conductor（SSO provider）侧管理，见其运维文档
+- 连接信息：`make info-volc`（conductor 运维 Makefile）
