@@ -1,5 +1,5 @@
-# 阅读 · Mobile Reader
+# Mobile Reader
 
-一个移动端友好的 HTML 阅读器：上传文件或导入网址，加入阅读列表，点击即可沉浸阅读。
+A mobile friendly reader: upload fire or load from url, add to list, enjoy reading.
 
 ![预览](docs/screenshot.png)
