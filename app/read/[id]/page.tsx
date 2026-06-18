@@ -474,7 +474,15 @@ export default function ReaderPage() {
       const belowTop =
         frameRect.top + event.data.rect.top + event.data.rect.height + 8;
       const desiredTop = selectionTop - 42;
-      const top = Math.max(58, desiredTop < 58 ? belowTop : desiredTop);
+      // On mobile/touch the native selection menu covers the area above the
+      // selection, so anchor the comment button below the selection instead.
+      const isTouch =
+        typeof window !== "undefined" &&
+        (window.matchMedia?.("(pointer: coarse)").matches ||
+          "ontouchstart" in window);
+      const top = isTouch
+        ? belowTop
+        : Math.max(58, desiredTop < 58 ? belowTop : desiredTop);
       const left = Math.min(
         window.innerWidth - 82,
         Math.max(12, selectionLeft - 34)
