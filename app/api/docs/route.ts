@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getCurrentUserFromRequest } from "@/lib/auth";
-import { addDocForUser, listDocsForUser } from "@/lib/db";
-import { translateDocInBackground } from "@/lib/translate";
+import { addDocForUser, enqueueTranslationJob, listDocsForUser } from "@/lib/db";
+import { ensureTranslationWorker } from "@/lib/translation-worker";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -46,8 +46,9 @@ export async function POST(request: NextRequest) {
   const doc = addDocForUser(user.id, body.html, body.source, { translate });
 
   if (translate) {
-    // Fire-and-forget background translation; the client polls for status.
-    void translateDocInBackground(user.id, doc.id, body.html);
+    // Enqueue a durable job and nudge the worker; the client polls for status.
+    enqueueTranslationJob(user.id, doc.id);
+    ensureTranslationWorker();
   }
 
   return NextResponse.json({ doc }, { status: 201 });

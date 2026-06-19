@@ -7,6 +7,7 @@ import {
   deleteDoc,
   listDocs,
   renameDoc,
+  translateDoc,
   type DocMeta,
 } from "@/lib/storage";
 import { ReaderLogo } from "@/app/reader-logo";
@@ -177,6 +178,20 @@ export default function ReaderHome({
     [refresh]
   );
 
+  const onTranslate = useCallback(
+    async (doc: DocMeta) => {
+      setOpenMenu(null);
+      try {
+        await translateDoc(doc.id);
+        await refresh();
+        showToast("已开始翻译…");
+      } catch {
+        showToast("无法开始翻译");
+      }
+    },
+    [refresh, showToast]
+  );
+
   const onDelete = useCallback(
     async (doc: DocMeta) => {
       setOpenMenu(null);
@@ -301,6 +316,9 @@ export default function ReaderHome({
                   {doc.translationStatus === "translated" && (
                     <span className="doc-badge done">中文</span>
                   )}
+                  {doc.translationStatus === "partial" && (
+                    <span className="doc-badge partial">部分翻译</span>
+                  )}
                   {doc.translationStatus === "failed" && (
                     <span className="doc-badge failed">翻译失败</span>
                   )}
@@ -334,6 +352,16 @@ export default function ReaderHome({
                         打开
                       </button>
                       <button onClick={() => onRename(doc)}>重命名</button>
+                      {doc.translationStatus !== "translating" && (
+                        <button onClick={() => onTranslate(doc)}>
+                          {doc.translationStatus === "failed"
+                            ? "重试翻译"
+                            : doc.translationStatus === "translated" ||
+                                doc.translationStatus === "partial"
+                              ? "重新翻译"
+                              : "翻译成中文"}
+                        </button>
+                      )}
                       <button
                         className="danger"
                         onClick={() => setConfirmId(doc.id)}

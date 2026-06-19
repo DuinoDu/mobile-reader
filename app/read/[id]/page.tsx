@@ -14,6 +14,7 @@ import {
   deleteComment,
   getDocRecord,
   listComments,
+  translateDoc,
   updateComment,
   type CommentAnchor,
   type ReaderComment,
@@ -392,6 +393,16 @@ export default function ReaderPage() {
     toastTimer.current = setTimeout(() => setToast(null), 2200);
   }, []);
 
+  const startTranslation = useCallback(async () => {
+    try {
+      await translateDoc(id);
+      setTranslationStatus("translating");
+      showToast("已开始翻译…");
+    } catch {
+      showToast("无法开始翻译");
+    }
+  }, [id, showToast]);
+
   const postToFrame = useCallback((message: Record<string, unknown>) => {
     frameRef.current?.contentWindow?.postMessage(
       { source: "mobile-reader-parent", ...message },
@@ -665,6 +676,12 @@ export default function ReaderPage() {
                 : "译文"}
           </button>
         )}
+        {!htmlZh &&
+          (translationStatus === "none" || translationStatus === "failed") && (
+            <button className="reader-view-toggle" onClick={startTranslation}>
+              {translationStatus === "failed" ? "重试翻译" : "翻译成中文"}
+            </button>
+          )}
         <button
           className="reader-comments-toggle"
           aria-pressed={commentsOpen}

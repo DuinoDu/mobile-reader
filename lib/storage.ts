@@ -146,6 +146,14 @@ export async function addDoc(
   return data.doc;
 }
 
+export async function translateDoc(id: string): Promise<DocMeta> {
+  const data = await requestJson<{ doc: DocMeta }>(
+    `/api/docs/${id}/translate`,
+    { method: "POST" }
+  );
+  return data.doc;
+}
+
 export async function deleteDoc(id: string): Promise<void> {
   await requestJson<{ ok: true }>(`/api/docs/${id}`, { method: "DELETE" });
   await deleteCommentsForDoc(id);

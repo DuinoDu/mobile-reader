@@ -2,6 +2,7 @@ export type TranslationStatus =
   | "none"
   | "translating"
   | "translated"
+  | "partial"
   | "failed";
 
 export interface DocMeta {

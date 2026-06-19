@@ -108,6 +108,32 @@ function migrate(db: Database.Database): void {
       "ALTER TABLE docs ADD COLUMN translation_status TEXT NOT NULL DEFAULT 'none'"
     );
   }
+
+  // Durable translation queue: one job per doc (doc_id UNIQUE). The in-process
+  // worker claims jobs, leases them, and retries with backoff; on restart any
+  // stale "running" lease is reclaimed (see recoverStuckTranslationJobs).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS translation_jobs (
+      id TEXT PRIMARY KEY,
+      doc_id TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      total INTEGER NOT NULL DEFAULT 0,
+      done INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      available_at INTEGER NOT NULL DEFAULT 0,
+      lease_until INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (doc_id) REFERENCES docs(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_translation_jobs_claim
+      ON translation_jobs(status, available_at);
+  `);
 }
 
 function getDb(): Database.Database {
@@ -324,32 +350,260 @@ export function addDocForUser(
   return { id, title, source: cleanSource, addedAt, size, translationStatus };
 }
 
-/** Store a completed translation and flip the doc's status to "translated". */
-export function setDocTranslation(
-  userId: string,
-  id: string,
-  htmlZh: string
-): boolean {
-  const result = getDb()
-    .prepare(
-      "UPDATE docs SET html_zh = ?, translation_status = 'translated' WHERE user_id = ? AND id = ?"
-    )
-    .run(htmlZh, userId, id);
-  return result.changes > 0;
+// ---------------------------------------------------------------------------
+// Translation queue (durable jobs drained by lib/translation-worker.ts)
+// ---------------------------------------------------------------------------
+
+export type TranslationJobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed";
+
+export interface TranslationJob {
+  id: string;
+  docId: string;
+  userId: string;
+  status: TranslationJobStatus;
+  attempts: number;
+  maxAttempts: number;
+  total: number;
+  done: number;
+  error: string | null;
+  availableAt: number;
+  leaseUntil: number | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
-/** Update only the translation status (e.g. to "failed"). */
-export function setDocTranslationStatus(
-  userId: string,
-  id: string,
-  status: TranslationStatus
-): boolean {
+interface TranslationJobRow {
+  id: string;
+  doc_id: string;
+  user_id: string;
+  status: TranslationJobStatus;
+  attempts: number;
+  max_attempts: number;
+  total: number;
+  done: number;
+  error: string | null;
+  available_at: number;
+  lease_until: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function mapJob(row: TranslationJobRow): TranslationJob {
+  return {
+    id: row.id,
+    docId: row.doc_id,
+    userId: row.user_id,
+    status: row.status,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    total: row.total,
+    done: row.done,
+    error: row.error,
+    availableAt: row.available_at,
+    leaseUntil: row.lease_until,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Queue (or re-queue) a translation for a doc the user owns. Idempotent per doc:
+ * an existing job row is reset to "queued". Flips the doc to "translating".
+ * Returns false if the doc doesn't exist for this user.
+ */
+export function enqueueTranslationJob(userId: string, docId: string): boolean {
+  const db = getDb();
+  const now = Date.now();
+  const owns = db
+    .prepare("SELECT 1 FROM docs WHERE id = ? AND user_id = ?")
+    .get(docId, userId);
+  if (!owns) return false;
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `
+        INSERT INTO translation_jobs (
+          id, doc_id, user_id, status, attempts, max_attempts,
+          total, done, error, available_at, lease_until, created_at, updated_at
+        )
+        VALUES (?, ?, ?, 'queued', 0, 3, 0, 0, NULL, 0, NULL, ?, ?)
+        ON CONFLICT(doc_id) DO UPDATE SET
+          status = 'queued', attempts = 0, total = 0, done = 0,
+          error = NULL, available_at = 0, lease_until = NULL, updated_at = excluded.updated_at
+      `
+    ).run(randomUUID(), docId, userId, now, now);
+    db.prepare(
+      "UPDATE docs SET translation_status = 'translating' WHERE id = ? AND user_id = ?"
+    ).run(docId, userId);
+  });
+  tx();
+  return true;
+}
+
+/** On startup / periodically: return any expired "running" lease to "queued". */
+export function recoverStuckTranslationJobs(): number {
+  const now = Date.now();
   const result = getDb()
     .prepare(
-      "UPDATE docs SET translation_status = ? WHERE user_id = ? AND id = ?"
+      `UPDATE translation_jobs
+         SET status = 'queued', lease_until = NULL, updated_at = ?
+       WHERE status = 'running' AND (lease_until IS NULL OR lease_until < ?)`
     )
-    .run(status, userId, id);
-  return result.changes > 0;
+    .run(now, now);
+  return result.changes;
+}
+
+export interface ClaimedTranslationJob {
+  job: TranslationJob;
+  html: string;
+}
+
+/**
+ * Atomically claim the next runnable job: oldest "queued" whose backoff has
+ * elapsed. Marks it "running", bumps attempts, sets a lease. Skips (and fails)
+ * jobs whose doc has vanished. Returns null when nothing is runnable now.
+ */
+export function claimNextTranslationJob(
+  leaseMs: number
+): ClaimedTranslationJob | null {
+  const db = getDb();
+  const claim = db.transaction((): TranslationJobRow | null => {
+    const now = Date.now();
+    const row = db
+      .prepare(
+        `SELECT * FROM translation_jobs
+           WHERE status = 'queued' AND available_at <= ?
+           ORDER BY created_at ASC LIMIT 1`
+      )
+      .get(now) as TranslationJobRow | undefined;
+    if (!row) return null;
+    db.prepare(
+      `UPDATE translation_jobs
+         SET status = 'running', attempts = attempts + 1, lease_until = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(now + leaseMs, now, row.id);
+    return db
+      .prepare("SELECT * FROM translation_jobs WHERE id = ?")
+      .get(row.id) as TranslationJobRow;
+  });
+
+  const row = claim();
+  if (!row) return null;
+
+  const doc = db.prepare("SELECT html FROM docs WHERE id = ?").get(row.doc_id) as
+    | { html: string }
+    | undefined;
+  if (!doc) {
+    failOrRequeueTranslationJob(row.id, "doc_missing", true);
+    return claimNextTranslationJob(leaseMs);
+  }
+  return { job: mapJob(row), html: doc.html };
+}
+
+/** Heartbeat: record progress and extend the lease while a job runs. */
+export function updateTranslationJobProgress(
+  jobId: string,
+  done: number,
+  total: number,
+  leaseMs: number
+): void {
+  const now = Date.now();
+  getDb()
+    .prepare(
+      "UPDATE translation_jobs SET done = ?, total = ?, lease_until = ?, updated_at = ? WHERE id = ?"
+    )
+    .run(done, total, now + leaseMs, now, jobId);
+}
+
+/** Mark a job done and write the result onto its doc in one transaction. */
+export function completeTranslationJob(
+  jobId: string,
+  opts: {
+    htmlZh: string | null;
+    total: number;
+    done: number;
+    docStatus: TranslationStatus;
+  }
+): void {
+  const db = getDb();
+  const now = Date.now();
+  const job = db
+    .prepare("SELECT doc_id FROM translation_jobs WHERE id = ?")
+    .get(jobId) as { doc_id: string } | undefined;
+  if (!job) return;
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE translation_jobs
+         SET status = 'succeeded', total = ?, done = ?, error = NULL, lease_until = NULL, updated_at = ?
+       WHERE id = ?`
+    ).run(opts.total, opts.done, now, jobId);
+    if (opts.htmlZh != null) {
+      db.prepare(
+        "UPDATE docs SET html_zh = ?, translation_status = ? WHERE id = ?"
+      ).run(opts.htmlZh, opts.docStatus, job.doc_id);
+    } else {
+      db.prepare("UPDATE docs SET translation_status = ? WHERE id = ?").run(
+        opts.docStatus,
+        job.doc_id
+      );
+    }
+  });
+  tx();
+}
+
+/**
+ * Fail a job: retry with quadratic backoff while attempts remain, otherwise mark
+ * it (and its doc) permanently "failed". `noRetry` forces terminal failure
+ * (e.g. missing API key or a deleted doc).
+ */
+export function failOrRequeueTranslationJob(
+  jobId: string,
+  error: string,
+  noRetry = false
+): "requeued" | "failed" {
+  const db = getDb();
+  const now = Date.now();
+  const row = db
+    .prepare("SELECT * FROM translation_jobs WHERE id = ?")
+    .get(jobId) as TranslationJobRow | undefined;
+  if (!row) return "failed";
+
+  if (!noRetry && row.attempts < row.max_attempts) {
+    const backoff = Math.min(row.attempts * row.attempts * 5000, 60_000);
+    db.prepare(
+      `UPDATE translation_jobs
+         SET status = 'queued', available_at = ?, error = ?, lease_until = NULL, updated_at = ?
+       WHERE id = ?`
+    ).run(now + backoff, error, now, jobId);
+    return "requeued";
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      "UPDATE translation_jobs SET status = 'failed', error = ?, lease_until = NULL, updated_at = ? WHERE id = ?"
+    ).run(error, now, jobId);
+    db.prepare(
+      "UPDATE docs SET translation_status = 'failed' WHERE id = ?"
+    ).run(row.doc_id);
+  });
+  tx();
+  return "failed";
+}
+
+/** Delay (ms) until the next backed-off "queued" job is runnable, or null. */
+export function nextQueuedTranslationDelayMs(): number | null {
+  const row = getDb()
+    .prepare(
+      "SELECT MIN(available_at) AS next FROM translation_jobs WHERE status = 'queued'"
+    )
+    .get() as { next: number | null };
+  if (row.next == null) return null;
+  return Math.max(0, row.next - Date.now());
 }
 
 export function renameDocForUser(
@@ -367,7 +621,7 @@ export function renameDocForUser(
   if (result.changes === 0) return null;
   const doc = getDocForUser(userId, id);
   if (!doc) return null;
-  const { html: _html, ...meta } = doc;
+  const { html: _html, htmlZh: _htmlZh, ...meta } = doc;
   return meta;
 }
 

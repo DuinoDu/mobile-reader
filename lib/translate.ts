@@ -1,7 +1,5 @@
 import "server-only";
 
-import { setDocTranslation, setDocTranslationStatus } from "@/lib/db";
-
 /**
  * HTML-preserving translation to Simplified Chinese via DeepSeek
  * (OpenAI-compatible chat completions API).
@@ -45,9 +43,27 @@ type TextToken = { kind: "text"; value: string };
 type RawToken = { kind: "raw"; value: string };
 type Token = TextToken | RawToken;
 
-export function deepseekConfigured(): boolean {
-  return Boolean(process.env.DEEPSEEK_API_KEY);
+/** Thrown when DEEPSEEK_API_KEY is absent — lets the worker distinguish a
+ *  misconfiguration (don't retry) from a transient translation failure. */
+export class TranslationNotConfiguredError extends Error {
+  constructor() {
+    super("DEEPSEEK_API_KEY is not configured");
+    this.name = "TranslationNotConfiguredError";
+  }
 }
+
+export interface TranslationResult {
+  /** Reassembled HTML with translated text spliced in (original where missing). */
+  html: string;
+  /** Number of translatable text segments found in the document. */
+  total: number;
+  /** Number of segments that were actually translated. */
+  done: number;
+  /** True if the character cap stopped us from attempting every segment. */
+  truncated: boolean;
+}
+
+export type ProgressCallback = (done: number, total: number) => void;
 
 /** Split HTML into a flat list of raw (tags/comments/raw-elements) and text tokens. */
 function tokenize(html: string): Token[] {
@@ -228,31 +244,45 @@ async function runPool<T>(
 
 /**
  * Translate the readable text of an HTML document into Simplified Chinese while
- * preserving its structure. Returns the original HTML untouched if DeepSeek is
- * not configured or the request fails, so import never hard-fails on this step.
+ * preserving its structure.
+ *
+ * Throws {@link TranslationNotConfiguredError} when no API key is set. Otherwise
+ * always returns the (partially) rebuilt HTML plus honest counts: callers decide
+ * whether `done === total` (fully translated), `done < total` (partial), or
+ * `total === 0` (nothing to translate). `onProgress` fires as batches complete.
  */
 export async function translateHtmlToChinese(
-  html: string
-): Promise<{ html: string; translated: boolean }> {
+  html: string,
+  onProgress?: ProgressCallback
+): Promise<TranslationResult> {
   const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) return { html, translated: false };
+  if (!apiKey) throw new TranslationNotConfiguredError();
 
   const tokens = tokenize(html);
 
-  // Collect translatable segments, respecting the global character cap.
-  const segments: Segment[] = [];
-  let budget = MAX_TRANSLATABLE_CHARS;
+  // Collect every translatable segment (the honest total), then attempt only as
+  // many as the character cap allows. `truncated` records that we stopped early
+  // so the result is reported as "partial" rather than a complete translation.
+  const allSegments: Segment[] = [];
   for (let idx = 0; idx < tokens.length; idx++) {
     const token = tokens[idx];
     if (token.kind !== "text" || !isTranslatable(token.value)) continue;
     const { lead, core, trail } = splitWhitespace(token.value);
     if (!core || !isTranslatable(core)) continue;
-    if (budget - core.length < 0) break;
-    budget -= core.length;
-    segments.push({ tokenIndex: idx, lead, core, trail });
+    allSegments.push({ tokenIndex: idx, lead, core, trail });
   }
 
-  if (segments.length === 0) return { html, translated: false };
+  const total = allSegments.length;
+  if (total === 0) return { html, total: 0, done: 0, truncated: false };
+
+  const segments: Segment[] = [];
+  let budget = MAX_TRANSLATABLE_CHARS;
+  for (const seg of allSegments) {
+    if (budget - seg.core.length < 0) break;
+    budget -= seg.core.length;
+    segments.push(seg);
+  }
+  const truncated = segments.length < total;
 
   // Pack segments into char-bounded batches.
   const batches: Segment[][] = [];
@@ -275,11 +305,13 @@ export async function translateHtmlToChinese(
     async (batch) => {
       const result = await translateBatch(apiKey, batch);
       result.forEach((value, tokenIndex) => translations.set(tokenIndex, value));
+      onProgress?.(translations.size, total);
     },
     CONCURRENCY
   );
 
-  if (translations.size === 0) return { html, translated: false };
+  const done = translations.size;
+  if (done === 0) return { html, total, done: 0, truncated };
 
   // Re-assemble, swapping in translated cores and keeping original whitespace.
   const segByIndex = new Map(segments.map((s) => [s.tokenIndex, s]));
@@ -293,31 +325,5 @@ export async function translateHtmlToChinese(
     })
     .join("");
 
-  return { html: rebuilt, translated: true };
-}
-
-/**
- * Fire-and-forget: translate a saved doc and persist the result. Updates the
- * doc's translation_status to "translated" on success or "failed" otherwise.
- * Never throws — intended to be called without awaiting from a route handler.
- */
-export async function translateDocInBackground(
-  userId: string,
-  docId: string,
-  html: string
-): Promise<void> {
-  try {
-    const { html: zh, translated } = await translateHtmlToChinese(html);
-    if (translated) {
-      setDocTranslation(userId, docId, zh);
-    } else {
-      setDocTranslationStatus(userId, docId, "failed");
-    }
-  } catch {
-    try {
-      setDocTranslationStatus(userId, docId, "failed");
-    } catch {
-      // swallow — nothing else we can do in a background task
-    }
-  }
+  return { html: rebuilt, total, done, truncated };
 }
