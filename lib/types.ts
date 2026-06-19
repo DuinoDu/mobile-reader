@@ -1,13 +1,23 @@
+export type TranslationStatus =
+  | "none"
+  | "translating"
+  | "translated"
+  | "failed";
+
 export interface DocMeta {
   id: string;
   title: string;
   source: string;
   addedAt: number;
   size: number;
+  translationStatus: TranslationStatus;
 }
 
 export interface DocRecord extends DocMeta {
+  /** Original-language HTML as downloaded/uploaded. */
   html: string;
+  /** Simplified-Chinese translation, present once translationStatus === "translated". */
+  htmlZh: string | null;
 }
 
 export interface AppUser {

@@ -71,6 +71,16 @@ export default function ReaderHome({
     refresh();
   }, [refresh]);
 
+  // Poll while any document is still being translated in the background.
+  const hasTranslating = !!docs?.some(
+    (d) => d.translationStatus === "translating"
+  );
+  useEffect(() => {
+    if (!hasTranslating) return;
+    const timer = setInterval(refresh, 3000);
+    return () => clearInterval(timer);
+  }, [hasTranslating, refresh]);
+
   const closeAllMenus = useCallback(() => {
     setOpenMenu(null);
     setConfirmId(null);
@@ -132,11 +142,13 @@ export default function ReaderHome({
         setUrlError(data.error ?? "导入失败");
         return;
       }
-      await addDoc(data.html, data.finalUrl ?? full);
+      // translate = true → page is saved immediately and translated to Chinese
+      // in the background; the list shows a「翻译中」badge until it's done.
+      await addDoc(data.html, data.finalUrl ?? full, true);
       await refresh();
       setUrlOpen(false);
       setUrl("");
-      showToast("已从链接导入");
+      showToast("已加入阅读列表，正在后台翻译…");
     } catch {
       setUrlError("网络错误，请重试");
     } finally {
@@ -283,6 +295,15 @@ export default function ReaderHome({
                 <p className="title">{doc.title}</p>
                 <p className="sub">
                   {formatDate(doc.addedAt)} · {formatSize(doc.size)}
+                  {doc.translationStatus === "translating" && (
+                    <span className="doc-badge translating">翻译中…</span>
+                  )}
+                  {doc.translationStatus === "translated" && (
+                    <span className="doc-badge done">中文</span>
+                  )}
+                  {doc.translationStatus === "failed" && (
+                    <span className="doc-badge failed">翻译失败</span>
+                  )}
                 </p>
               </div>
               <button
@@ -341,7 +362,7 @@ export default function ReaderHome({
           >
             <h2>从网址导入</h2>
             <p className="modal-hint">
-              输入网页链接，将抓取该页面的 HTML 加入阅读列表。
+              输入网页链接，将下载该页面的 HTML、默认翻译成中文（保留排版）后加入阅读列表。
             </p>
             <input
               className="url-input"
@@ -373,7 +394,7 @@ export default function ReaderHome({
                 disabled={importing || !url.trim()}
                 onClick={importFromUrl}
               >
-                {importing ? "抓取中..." : "导入"}
+                {importing ? "下载并翻译中..." : "导入"}
               </button>
             </div>
           </div>

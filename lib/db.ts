@@ -9,7 +9,12 @@ import {
   normalizeTitle,
   stripHtmlExtension,
 } from "@/lib/doc-utils";
-import type { AppUser, DocMeta, DocRecord } from "@/lib/types";
+import type {
+  AppUser,
+  DocMeta,
+  DocRecord,
+  TranslationStatus,
+} from "@/lib/types";
 
 const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "mobile-reader.sqlite");
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -35,6 +40,8 @@ interface DocRow {
   added_at: number;
   size: number;
   html: string;
+  html_zh: string | null;
+  translation_status: TranslationStatus;
 }
 
 const globalForDb = globalThis as unknown as {
@@ -86,6 +93,21 @@ function migrate(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_docs_user_added_at ON docs(user_id, added_at DESC);
   `);
+
+  // Incremental migration: translation columns (added after initial release).
+  const docCols = new Set(
+    (db.prepare("PRAGMA table_info(docs)").all() as { name: string }[]).map(
+      (c) => c.name
+    )
+  );
+  if (!docCols.has("html_zh")) {
+    db.exec("ALTER TABLE docs ADD COLUMN html_zh TEXT");
+  }
+  if (!docCols.has("translation_status")) {
+    db.exec(
+      "ALTER TABLE docs ADD COLUMN translation_status TEXT NOT NULL DEFAULT 'none'"
+    );
+  }
 }
 
 function getDb(): Database.Database {
@@ -122,6 +144,7 @@ function mapDocMeta(row: DocRow): DocMeta {
     source: row.source,
     addedAt: row.added_at,
     size: row.size,
+    translationStatus: row.translation_status ?? "none",
   };
 }
 
@@ -129,6 +152,7 @@ function mapDocRecord(row: DocRow): DocRecord {
   return {
     ...mapDocMeta(row),
     html: row.html,
+    htmlZh: row.html_zh ?? null,
   };
 }
 
@@ -274,7 +298,8 @@ export function getDocForUser(userId: string, id: string): DocRecord | null {
 export function addDocForUser(
   userId: string,
   html: string,
-  source: string
+  source: string,
+  options: { translate?: boolean } = {}
 ): DocMeta {
   const id = randomUUID();
   const addedAt = Date.now();
@@ -283,17 +308,48 @@ export function addDocForUser(
     extractTitle(html, stripHtmlExtension(cleanSource)) || "未命名文档"
   );
   const size = Buffer.byteLength(html, "utf8");
+  const translationStatus: TranslationStatus = options.translate
+    ? "translating"
+    : "none";
 
   getDb()
     .prepare(
       `
-        INSERT INTO docs (id, user_id, title, source, added_at, size, html)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO docs (id, user_id, title, source, added_at, size, html, translation_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `
     )
-    .run(id, userId, title, cleanSource, addedAt, size, html);
+    .run(id, userId, title, cleanSource, addedAt, size, html, translationStatus);
 
-  return { id, title, source: cleanSource, addedAt, size };
+  return { id, title, source: cleanSource, addedAt, size, translationStatus };
+}
+
+/** Store a completed translation and flip the doc's status to "translated". */
+export function setDocTranslation(
+  userId: string,
+  id: string,
+  htmlZh: string
+): boolean {
+  const result = getDb()
+    .prepare(
+      "UPDATE docs SET html_zh = ?, translation_status = 'translated' WHERE user_id = ? AND id = ?"
+    )
+    .run(htmlZh, userId, id);
+  return result.changes > 0;
+}
+
+/** Update only the translation status (e.g. to "failed"). */
+export function setDocTranslationStatus(
+  userId: string,
+  id: string,
+  status: TranslationStatus
+): boolean {
+  const result = getDb()
+    .prepare(
+      "UPDATE docs SET translation_status = ? WHERE user_id = ? AND id = ?"
+    )
+    .run(status, userId, id);
+  return result.changes > 0;
 }
 
 export function renameDocForUser(

@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getCurrentUserFromRequest } from "@/lib/auth";
 import { addDocForUser, listDocsForUser } from "@/lib/db";
+import { translateDocInBackground } from "@/lib/translate";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -22,9 +23,13 @@ export async function POST(request: NextRequest) {
   const user = getCurrentUserFromRequest(request);
   if (!user) return unauthorized();
 
-  let body: { html?: unknown; source?: unknown };
+  let body: { html?: unknown; source?: unknown; translate?: unknown };
   try {
-    body = (await request.json()) as { html?: unknown; source?: unknown };
+    body = (await request.json()) as {
+      html?: unknown;
+      source?: unknown;
+      translate?: unknown;
+    };
   } catch {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
@@ -37,6 +42,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "文件过大（>12MB）" }, { status: 413 });
   }
 
-  const doc = addDocForUser(user.id, body.html, body.source);
+  const translate = body.translate === true;
+  const doc = addDocForUser(user.id, body.html, body.source, { translate });
+
+  if (translate) {
+    // Fire-and-forget background translation; the client polls for status.
+    void translateDocInBackground(user.id, doc.id, body.html);
+  }
+
   return NextResponse.json({ doc }, { status: 201 });
 }

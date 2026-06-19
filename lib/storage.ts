@@ -118,6 +118,11 @@ export async function listDocs(): Promise<DocMeta[]> {
   return data.docs;
 }
 
+export async function getDocRecord(id: string): Promise<DocRecord | null> {
+  const data = await requestJson<{ doc: DocRecord }>(`/api/docs/${id}`);
+  return data.doc;
+}
+
 export async function getContent(id: string): Promise<string | null> {
   const data = await requestJson<{ doc: DocRecord }>(`/api/docs/${id}`);
   return data.doc.html;
@@ -125,14 +130,18 @@ export async function getContent(id: string): Promise<string | null> {
 
 export async function getMeta(id: string): Promise<DocMeta | null> {
   const data = await requestJson<{ doc: DocRecord }>(`/api/docs/${id}`);
-  const { html: _html, ...meta } = data.doc;
+  const { html: _html, htmlZh: _htmlZh, ...meta } = data.doc;
   return meta;
 }
 
-export async function addDoc(html: string, source: string): Promise<DocMeta> {
+export async function addDoc(
+  html: string,
+  source: string,
+  translate = false
+): Promise<DocMeta> {
   const data = await requestJson<{ doc: DocMeta }>("/api/docs", {
     method: "POST",
-    body: JSON.stringify({ html, source }),
+    body: JSON.stringify({ html, source, translate }),
   });
   return data.doc;
 }
