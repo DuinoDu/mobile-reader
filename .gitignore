@@ -49,5 +49,6 @@ next-env.d.ts
 # conductor
 .conductor/worktrees
 .conductor/state/
+conductor-terminal.log
 conductor.log
 Makefile
