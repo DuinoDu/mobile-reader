@@ -10,6 +10,11 @@ import {
   translateDoc,
   type DocMeta,
 } from "@/lib/storage";
+import {
+  isSupportedOfflineFile,
+  OFFLINE_FILE_ACCEPT,
+  readOfflineFile,
+} from "@/lib/offline-file";
 import { ReaderLogo } from "@/app/reader-logo";
 import type { PublicUser } from "@/lib/types";
 
@@ -103,18 +108,16 @@ export default function ReaderHome({
 
   const handleFiles = useCallback(
     async (files: FileList | File[]) => {
-      const list = Array.from(files).filter(
-        (f) => /\.html?$/i.test(f.name) || f.type === "text/html"
-      );
+      const list = Array.from(files).filter(isSupportedOfflineFile);
       if (list.length === 0) {
-        showToast("请选择 HTML 文件");
+        showToast("请选择 HTML 或 MHTML 文件");
         return;
       }
       let added = 0;
       for (const file of list) {
         try {
-          const html = await file.text();
-          await addDoc(html, file.name);
+          const doc = await readOfflineFile(file);
+          await addDoc(doc.html, doc.source);
           added++;
         } catch {
           showToast(`「${file.name}」保存失败`);
@@ -284,7 +287,7 @@ export default function ReaderHome({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".html,.htm,text/html"
+        accept={OFFLINE_FILE_ACCEPT}
         multiple
         hidden
         onChange={(e) => {
@@ -302,10 +305,10 @@ export default function ReaderHome({
         >
           <p style={{ fontSize: 30, margin: "0 0 10px" }}>📄</p>
           <p>
-            <strong>点击或拖拽 HTML 文件到此处</strong>
+            <strong>点击或拖拽文件到此处</strong>
           </p>
           <p style={{ margin: "6px 0 0", fontSize: 13 }}>
-            也可用「＋ 添加 → 从网址导入」抓取在线页面
+            HTML / MHTML
           </p>
         </div>
       ) : (

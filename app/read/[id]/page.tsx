@@ -29,6 +29,15 @@ type FrameRect = {
   height: number;
 };
 
+type FrameScrollState = {
+  scrollX: number;
+  scrollY: number;
+  maxScrollX: number;
+  maxScrollY: number;
+  ratioX: number;
+  ratioY: number;
+};
+
 type PendingSelection = {
   text: string;
   anchor: CommentAnchor;
@@ -58,6 +67,12 @@ type FrameMessage =
       source: "mobile-reader-frame";
       type: "comment-click";
       id: string;
+    }
+  | {
+      source: "mobile-reader-frame";
+      type: "scroll-state";
+      state: FrameScrollState;
+      requestId?: number;
     };
 
 const READER_BRIDGE = `
@@ -74,6 +89,7 @@ html, body, body * { -webkit-user-select: text; user-select: text; -webkit-touch
   var rangesById = new Map();
   var activeCommentId = null;
   var selectionTimer = 0;
+  var scrollRaf = 0;
 
   function post(message) {
     window.parent.postMessage(Object.assign({ source: FRAME_SOURCE }, message), "*");
@@ -263,12 +279,74 @@ html, body, body * { -webkit-user-select: text; user-select: text; -webkit-touch
     window.scrollBy({ top: top, left: 0, behavior: "smooth" });
   }
 
+  function finite(value, fallback) {
+    return typeof value === "number" && isFinite(value) ? value : fallback;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function getScrollState() {
+    var element = document.scrollingElement || document.documentElement || document.body;
+    var scrollX = finite(window.scrollX, element.scrollLeft || 0);
+    var scrollY = finite(window.scrollY, element.scrollTop || 0);
+    var maxScrollX = Math.max(0, element.scrollWidth - window.innerWidth);
+    var maxScrollY = Math.max(0, element.scrollHeight - window.innerHeight);
+    return {
+      scrollX: scrollX,
+      scrollY: scrollY,
+      maxScrollX: maxScrollX,
+      maxScrollY: maxScrollY,
+      ratioX: maxScrollX > 0 ? scrollX / maxScrollX : 0,
+      ratioY: maxScrollY > 0 ? scrollY / maxScrollY : 0
+    };
+  }
+
+  function reportScrollState(requestId) {
+    var message = { type: "scroll-state", state: getScrollState() };
+    if (typeof requestId === "number") message.requestId = requestId;
+    post(message);
+  }
+
+  function scheduleScrollStateReport() {
+    if (scrollRaf) return;
+    scrollRaf = window.requestAnimationFrame(function () {
+      scrollRaf = 0;
+      reportScrollState();
+    });
+  }
+
+  function restoreScrollState(state) {
+    if (!state) return;
+    var current = getScrollState();
+    var nextX = finite(state.ratioX, 0) * current.maxScrollX;
+    var nextY = finite(state.ratioY, 0) * current.maxScrollY;
+    if (current.maxScrollX === 0) nextX = finite(state.scrollX, 0);
+    if (current.maxScrollY === 0) nextY = finite(state.scrollY, 0);
+    window.scrollTo(
+      Math.round(clamp(nextX, 0, current.maxScrollX)),
+      Math.round(clamp(nextY, 0, current.maxScrollY))
+    );
+    reportScrollState();
+  }
+
+  function restoreScrollStateSoon(state) {
+    restoreScrollState(state);
+    window.requestAnimationFrame(function () { restoreScrollState(state); });
+    window.setTimeout(function () { restoreScrollState(state); }, 120);
+    window.setTimeout(function () { restoreScrollState(state); }, 360);
+    window.setTimeout(function () { restoreScrollState(state); }, 900);
+  }
+
   document.addEventListener("mouseup", scheduleSelectionReport);
   document.addEventListener("pointerup", scheduleSelectionReport);
   document.addEventListener("touchend", scheduleTouchSelectionReport, { passive: true });
   document.addEventListener("touchcancel", scheduleTouchSelectionReport, { passive: true });
   document.addEventListener("selectionchange", scheduleSelectionReport);
   document.addEventListener("keyup", scheduleSelectionReport);
+  window.addEventListener("scroll", scheduleScrollStateReport, { passive: true });
+  window.addEventListener("resize", scheduleScrollStateReport);
   document.addEventListener("click", function (event) {
     var id = commentIdAtPoint(event.clientX, event.clientY);
     if (!id) return;
@@ -293,9 +371,16 @@ html, body, body * { -webkit-user-select: text; user-select: text; -webkit-touch
     if (data.type === "clear-selection") {
       clearSelection();
     }
+    if (data.type === "capture-scroll") {
+      reportScrollState(data.requestId);
+    }
+    if (data.type === "restore-scroll") {
+      restoreScrollStateSoon(data.state);
+    }
   });
 
   post({ type: "ready" });
+  reportScrollState();
 })();
 </script>`;
 
@@ -335,12 +420,30 @@ function isFrameRect(value: unknown): value is FrameRect {
   );
 }
 
+function isFrameScrollState(value: unknown): value is FrameScrollState {
+  return (
+    isPlainObject(value) &&
+    typeof value.scrollX === "number" &&
+    typeof value.scrollY === "number" &&
+    typeof value.maxScrollX === "number" &&
+    typeof value.maxScrollY === "number" &&
+    typeof value.ratioX === "number" &&
+    typeof value.ratioY === "number"
+  );
+}
+
 function isFrameMessage(value: unknown): value is FrameMessage {
   if (!isPlainObject(value) || value.source !== "mobile-reader-frame") {
     return false;
   }
   if (value.type === "ready" || value.type === "selection-clear") return true;
   if (value.type === "comment-click") return typeof value.id === "string";
+  if (value.type === "scroll-state") {
+    return (
+      isFrameScrollState(value.state) &&
+      (value.requestId === undefined || typeof value.requestId === "number")
+    );
+  }
   return (
     value.type === "selection" &&
     typeof value.text === "string" &&
@@ -364,6 +467,14 @@ export default function ReaderPage() {
   const id = params.id;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestFrameScroll = useRef<FrameScrollState | null>(null);
+  const pendingFrameScrollRestore = useRef<FrameScrollState | null>(null);
+  const scrollRequestSeq = useRef(0);
+  const pendingScrollRequest = useRef<{
+    id: number;
+    resolve: (state: FrameScrollState | null) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
 
   const [html, setHtml] = useState<string | null>(null);
   const [htmlZh, setHtmlZh] = useState<string | null>(null);
@@ -421,9 +532,57 @@ export default function ReaderPage() {
     );
   }, []);
 
+  const captureFrameScroll = useCallback(() => {
+    return new Promise<FrameScrollState | null>((resolve) => {
+      if (!frameRef.current?.contentWindow) {
+        resolve(latestFrameScroll.current);
+        return;
+      }
+      if (pendingScrollRequest.current) {
+        clearTimeout(pendingScrollRequest.current.timer);
+        pendingScrollRequest.current.resolve(latestFrameScroll.current);
+      }
+
+      const requestId = scrollRequestSeq.current + 1;
+      scrollRequestSeq.current = requestId;
+      const timer = setTimeout(() => {
+        if (pendingScrollRequest.current?.id !== requestId) return;
+        pendingScrollRequest.current = null;
+        resolve(latestFrameScroll.current);
+      }, 180);
+
+      pendingScrollRequest.current = {
+        id: requestId,
+        resolve,
+        timer,
+      };
+      postToFrame({ type: "capture-scroll", requestId });
+    });
+  }, [postToFrame]);
+
   const syncCommentsToFrame = useCallback(() => {
     postToFrame({ type: "sync-comments", comments });
   }, [comments, postToFrame]);
+
+  const switchReaderView = useCallback(
+    async (nextView: "zh" | "original") => {
+      setPendingSelection(null);
+      setComposerOpen(false);
+      postToFrame({ type: "clear-selection" });
+
+      const scrollState = await captureFrameScroll();
+      pendingFrameScrollRestore.current =
+        scrollState ?? latestFrameScroll.current;
+      setView(nextView);
+    },
+    [captureFrameScroll, postToFrame]
+  );
+
+  const toggleReaderView = useCallback(() => {
+    if (!htmlZh) return;
+    const nextView = view === "zh" ? "original" : "zh";
+    void switchReaderView(nextView);
+  }, [htmlZh, switchReaderView, view]);
 
   useEffect(() => {
     let active = true;
@@ -436,6 +595,13 @@ export default function ReaderPage() {
     setPendingSelection(null);
     setComposerOpen(false);
     setActiveCommentId(null);
+    latestFrameScroll.current = null;
+    pendingFrameScrollRestore.current = null;
+    if (pendingScrollRequest.current) {
+      clearTimeout(pendingScrollRequest.current.timer);
+      pendingScrollRequest.current.resolve(null);
+      pendingScrollRequest.current = null;
+    }
     (async () => {
       try {
         const [record, savedComments] = await Promise.all([
@@ -474,7 +640,7 @@ export default function ReaderPage() {
         setTranslationStatus(record.translationStatus);
         if (record.htmlZh) {
           setHtmlZh(record.htmlZh);
-          setView("zh");
+          void switchReaderView("zh");
         }
       } catch {
         // keep polling; transient failure
@@ -484,7 +650,7 @@ export default function ReaderPage() {
       active = false;
       clearInterval(timer);
     };
-  }, [translationStatus, id]);
+  }, [translationStatus, id, switchReaderView]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -495,6 +661,24 @@ export default function ReaderPage() {
         syncCommentsToFrame();
         if (activeCommentId) {
           postToFrame({ type: "active-comment", id: activeCommentId });
+        }
+        if (pendingFrameScrollRestore.current) {
+          postToFrame({
+            type: "restore-scroll",
+            state: pendingFrameScrollRestore.current,
+          });
+          pendingFrameScrollRestore.current = null;
+        }
+        return;
+      }
+
+      if (event.data.type === "scroll-state") {
+        latestFrameScroll.current = event.data.state;
+        const pendingRequest = pendingScrollRequest.current;
+        if (pendingRequest && pendingRequest.id === event.data.requestId) {
+          clearTimeout(pendingRequest.timer);
+          pendingRequest.resolve(event.data.state);
+          pendingScrollRequest.current = null;
         }
         return;
       }
@@ -557,6 +741,11 @@ export default function ReaderPage() {
   useEffect(() => {
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      if (pendingScrollRequest.current) {
+        clearTimeout(pendingScrollRequest.current.timer);
+        pendingScrollRequest.current.resolve(latestFrameScroll.current);
+        pendingScrollRequest.current = null;
+      }
     };
   }, []);
 
@@ -706,9 +895,7 @@ export default function ReaderPage() {
             className="reader-view-toggle"
             disabled={!htmlZh}
             aria-pressed={view === "zh"}
-            onClick={() =>
-              setView((v) => (v === "zh" ? "original" : "zh"))
-            }
+            onClick={toggleReaderView}
             title={htmlZh ? "切换原文 / 中文译文" : "正在翻译"}
           >
             {!htmlZh && translationStatus === "translating"
