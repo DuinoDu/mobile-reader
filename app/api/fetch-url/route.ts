@@ -104,5 +104,7 @@ export async function GET(request: NextRequest) {
   }
 
   const finalUrl = res.url || target.toString();
+  // Download only — translation happens asynchronously after the doc is saved
+  // (see POST /api/docs), so importing stays fast even for long pages.
   return NextResponse.json({ html: injectBase(html, finalUrl), finalUrl });
 }

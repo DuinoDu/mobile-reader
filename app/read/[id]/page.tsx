@@ -13,13 +13,14 @@ import { useParams, useRouter } from "next/navigation";
 import {
   addComment,
   deleteComment,
-  getContent,
-  getMeta,
+  getDocRecord,
   listComments,
+  translateDoc,
   updateComment,
   type CommentAnchor,
   type ReaderComment,
 } from "@/lib/storage";
+import type { TranslationStatus } from "@/lib/types";
 
 type FrameRect = {
   top: number;
@@ -365,6 +366,10 @@ export default function ReaderPage() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [html, setHtml] = useState<string | null>(null);
+  const [htmlZh, setHtmlZh] = useState<string | null>(null);
+  const [translationStatus, setTranslationStatus] =
+    useState<TranslationStatus>("none");
+  const [view, setView] = useState<"zh" | "original">("original");
   const [title, setTitle] = useState("");
   const [state, setState] = useState<"loading" | "ready" | "missing">(
     "loading"
@@ -380,7 +385,10 @@ export default function ReaderPage() {
   const [editingNote, setEditingNote] = useState("");
   const [toast, setToast] = useState<string | null>(null);
 
-  const frameHtml = useMemo(() => (html ? withReaderBridge(html) : ""), [html]);
+  const frameHtml = useMemo(() => {
+    const src = view === "zh" && htmlZh ? htmlZh : html;
+    return src ? withReaderBridge(src) : "";
+  }, [view, htmlZh, html]);
 
   const selectionButtonStyle = useMemo<CSSProperties | undefined>(() => {
     if (!pendingSelection) return undefined;
@@ -395,6 +403,16 @@ export default function ReaderPage() {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 2200);
   }, []);
+
+  const startTranslation = useCallback(async () => {
+    try {
+      await translateDoc(id);
+      setTranslationStatus("translating");
+      showToast("已开始翻译…");
+    } catch {
+      showToast("无法开始翻译");
+    }
+  }, [id, showToast]);
 
   const postToFrame = useCallback((message: Record<string, unknown>) => {
     frameRef.current?.contentWindow?.postMessage(
@@ -411,24 +429,29 @@ export default function ReaderPage() {
     let active = true;
     setState("loading");
     setHtml(null);
+    setHtmlZh(null);
+    setTranslationStatus("none");
+    setView("original");
     setComments([]);
     setPendingSelection(null);
     setComposerOpen(false);
     setActiveCommentId(null);
     (async () => {
       try {
-        const [content, meta, savedComments] = await Promise.all([
-          getContent(id),
-          getMeta(id),
+        const [record, savedComments] = await Promise.all([
+          getDocRecord(id),
           listComments(id),
         ]);
         if (!active) return;
-        if (content == null) {
+        if (!record) {
           setState("missing");
           return;
         }
-        setHtml(content);
-        setTitle(meta?.title ?? "");
+        setHtml(record.html);
+        setHtmlZh(record.htmlZh);
+        setTranslationStatus(record.translationStatus);
+        setView(record.htmlZh ? "zh" : "original");
+        setTitle(record.title);
         setComments(savedComments);
         setState("ready");
       } catch {
@@ -439,6 +462,29 @@ export default function ReaderPage() {
       active = false;
     };
   }, [id]);
+
+  // While translating in the background, poll until the Chinese version lands.
+  useEffect(() => {
+    if (translationStatus !== "translating") return;
+    let active = true;
+    const timer = setInterval(async () => {
+      try {
+        const record = await getDocRecord(id);
+        if (!active || !record) return;
+        setTranslationStatus(record.translationStatus);
+        if (record.htmlZh) {
+          setHtmlZh(record.htmlZh);
+          setView("zh");
+        }
+      } catch {
+        // keep polling; transient failure
+      }
+    }, 3000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [translationStatus, id]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -655,6 +701,29 @@ export default function ReaderPage() {
           </svg>
         </button>
         <span className="doc-title">{title}</span>
+        {(htmlZh || translationStatus === "translating") && (
+          <button
+            className="reader-view-toggle"
+            disabled={!htmlZh}
+            aria-pressed={view === "zh"}
+            onClick={() =>
+              setView((v) => (v === "zh" ? "original" : "zh"))
+            }
+            title={htmlZh ? "切换原文 / 中文译文" : "正在翻译"}
+          >
+            {!htmlZh && translationStatus === "translating"
+              ? "翻译中…"
+              : view === "zh"
+                ? "原文"
+                : "译文"}
+          </button>
+        )}
+        {!htmlZh &&
+          (translationStatus === "none" || translationStatus === "failed") && (
+            <button className="reader-view-toggle" onClick={startTranslation}>
+              {translationStatus === "failed" ? "重试翻译" : "翻译成中文"}
+            </button>
+          )}
         <button
           className="reader-comments-toggle"
           aria-pressed={commentsOpen}
