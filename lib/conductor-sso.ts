@@ -15,10 +15,9 @@ export interface ConductorTokenResponse {
 }
 
 export function getConductorBaseUrl(): string {
-  return (process.env.CONDUCTOR_BASE_URL || "https://conductor-ai.top").replace(
-    /\/+$/,
-    ""
-  );
+  return (
+    process.env.CONDUCTOR_BASE_URL || "https://conductor.conductor-ai.top"
+  ).replace(/\/+$/, "");
 }
 
 export function getConductorClientId(): string {
